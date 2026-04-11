@@ -8,9 +8,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CPUINFER_ENABLE_AVX512_BF16=OFF \
     CPUINFER_ENABLE_AVX512_VBMI=OFF
 ENV CUDA_PYTHON_ROOT=/usr/local/lib/python3.12/dist-packages/nvidia/cu13
-ENV CPATH=${CUDA_PYTHON_ROOT}/include:${CPATH} \
-    LIBRARY_PATH=${CUDA_PYTHON_ROOT}/lib:${LIBRARY_PATH} \
-    LD_LIBRARY_PATH=${CUDA_PYTHON_ROOT}/lib:${LD_LIBRARY_PATH}
+ENV CPATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/include \
+    LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib \
+    LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
@@ -97,4 +97,4 @@ COPY docker/launch-kimi-k25-avx2.sh /usr/local/bin/launch-kimi-k25-avx2
 RUN chmod +x /usr/local/bin/launch-kimi-k25-avx2
 
 WORKDIR /workspace
-CMD ["/usr/local/bin/launch-kimi-k25-avx2"]
+ENTRYPOINT ["/usr/local/bin/launch-kimi-k25-avx2"]
