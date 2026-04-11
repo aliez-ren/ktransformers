@@ -1,0 +1,100 @@
+FROM vllm/vllm-openai:cu130-nightly
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CPUINFER_CPU_INSTRUCT=AVX2 \
+    CPUINFER_ENABLE_AMX=OFF \
+    CPUINFER_ENABLE_AVX512=OFF \
+    CPUINFER_ENABLE_AVX512_VNNI=OFF \
+    CPUINFER_ENABLE_AVX512_BF16=OFF \
+    CPUINFER_ENABLE_AVX512_VBMI=OFF
+ENV CUDA_PYTHON_ROOT=/usr/local/lib/python3.12/dist-packages/nvidia/cu13
+ENV CPATH=${CUDA_PYTHON_ROOT}/include:${CPATH} \
+    LIBRARY_PATH=${CUDA_PYTHON_ROOT}/lib:${LIBRARY_PATH} \
+    LD_LIBRARY_PATH=${CUDA_PYTHON_ROOT}/lib:${LD_LIBRARY_PATH}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      git \
+      git-lfs \
+      libhwloc-dev \
+      libnuma-dev \
+      ninja-build \
+      pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/ktransformers
+COPY . /workspace/ktransformers
+
+RUN git submodule update --init --recursive || true
+
+RUN python3 -m pip install --upgrade pip "setuptools<81" wheel pybind11 \
+    && python3 -m pip install \
+      compressed-tensors \
+      gguf \
+      httpx \
+      packaging \
+      pyyaml \
+      rich \
+      safetensors \
+      "typer[all]" \
+    && python3 -m pip install sglang-kt --no-deps \
+    && python3 -m pip install --no-deps \
+      blobfile \
+      build \
+      datasets \
+      decord2 \
+      grpcio-health-checking \
+      grpcio-reflection \
+      IPython \
+      orjson \
+      outlines \
+      outlines-core \
+      py-spy \
+      scipy \
+      sgl-kernel \
+      smg-grpc-proto \
+      soundfile \
+      torch-memory-saver \
+      torchao \
+      torchcodec \
+    && python3 -m pip install --no-deps \
+      asttokens \
+      decorator \
+      executing \
+      genson \
+      ipython-pygments-lexers \
+      jedi \
+      jsonpath-ng \
+      lxml \
+      matplotlib-inline \
+      multiprocess \
+      pandas \
+      parso \
+      pexpect \
+      prompt-toolkit \
+      ptyprocess \
+      pure-eval \
+      pyarrow \
+      pycryptodomex \
+      pyproject-hooks \
+      stack-data \
+      traitlets \
+      wcwidth \
+      xxhash
+
+RUN cd /workspace/ktransformers/kt-kernel \
+    && CPUINFER_CPU_INSTRUCT=AVX2 \
+       CPUINFER_ENABLE_AMX=OFF \
+       CPUINFER_ENABLE_AVX512=OFF \
+       CPUINFER_ENABLE_AVX512_VNNI=OFF \
+       CPUINFER_ENABLE_AVX512_BF16=OFF \
+       CPUINFER_ENABLE_AVX512_VBMI=OFF \
+       CPUINFER_PARALLEL="$(nproc)" \
+       python3 -m pip install . --no-deps -v
+
+COPY docker/launch-kimi-k25-avx2.sh /usr/local/bin/launch-kimi-k25-avx2
+RUN chmod +x /usr/local/bin/launch-kimi-k25-avx2
+
+WORKDIR /workspace
+CMD ["/usr/local/bin/launch-kimi-k25-avx2"]

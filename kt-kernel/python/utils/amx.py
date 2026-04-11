@@ -24,10 +24,12 @@ AMXFP8PerChannel_MOE = getattr(_moe_mod, "AMXFP8PerChannel_MOE", None)
 AVX2BF16_MOE = getattr(_moe_mod, "AVX2BF16_MOE", None)
 AVX2FP8_MOE = getattr(_moe_mod, "AVX2FP8_MOE", None)
 AVX2GPTQInt4_MOE = getattr(_moe_mod, "AVX2GPTQInt4_MOE", None)
+AVX2RawInt4_MOE = getattr(_moe_mod, "AVX2RawInt4_MOE", None)
 
 _HAS_AMXINT4_SUPPORT = AMXInt4_MOE is not None
 _HAS_AMXINT8_SUPPORT = AMXInt8_MOE is not None
 _HAS_RAWINT4_SUPPORT = AMXInt4_KGroup_MOE is not None
+_HAS_AVX2_RAWINT4_SUPPORT = AVX2RawInt4_MOE is not None
 _HAS_FP8_SUPPORT = AMXFP8_MOE is not None
 _HAS_BF16_SUPPORT = AMXBF16_MOE is not None
 _HAS_FP8_PERCHANNEL_SUPPORT = AMXFP8PerChannel_MOE is not None
@@ -359,11 +361,12 @@ class NativeMoEWrapper(BaseMoEWrapper):
         method: str = "RAWINT4",
         numa_nodes: Optional[List[int]] = None,
     ):
-        if method == "RAWINT4" and not _HAS_RAWINT4_SUPPORT:
+        if method == "RAWINT4" and not _HAS_RAWINT4_SUPPORT and not _HAS_AVX2_RAWINT4_SUPPORT:
             raise RuntimeError(
                 "RAWINT4 backend not available. Required ISA:\n"
-                "  - AVX512F + AVX512BW (VNNI optional)\n"
-                "Please recompile kt_kernel_ext with AVX512 enabled."
+                "  - AVX512F + AVX512BW (for AMX backend), or\n"
+                "  - AVX2 + FMA (for AVX2 fallback backend)\n"
+                "Please recompile kt_kernel_ext with AVX512 or AVX2 enabled."
             )
         if method == "FP8" and not _HAS_FP8_SUPPORT and not _HAS_AVX2_FP8_SUPPORT:
             raise RuntimeError(
@@ -532,7 +535,10 @@ class NativeMoEWrapper(BaseMoEWrapper):
             moe_config.quant_config.bits = 4
             moe_config.quant_config.group_size = group_size
             moe_config.quant_config.zero_point = False
-            self.moe = AMXInt4_KGroup_MOE(moe_config)
+            if _HAS_RAWINT4_SUPPORT:
+                self.moe = AMXInt4_KGroup_MOE(moe_config)
+            else:
+                self.moe = AVX2RawInt4_MOE(moe_config)
         elif self.method == "FP8":
             moe_config.quant_config.bits = 8
             moe_config.quant_config.group_size = 128
