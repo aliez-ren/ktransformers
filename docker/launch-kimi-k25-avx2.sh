@@ -24,17 +24,24 @@ fi
 
 TP_SIZE="${TP_SIZE:-$DEFAULT_TP_SIZE}"
 KT_CPUINFER="${KT_CPUINFER:-$(nproc)}"
-KT_THREADPOOL_COUNT="${KT_THREADPOOL_COUNT:-2}"
+KT_THREADPOOL_COUNT="${KT_THREADPOOL_COUNT:-1}"
 KT_NUM_GPU_EXPERTS="${KT_NUM_GPU_EXPERTS:-30}"
 KT_GPU_PREFILL_TOKEN_THRESHOLD="${KT_GPU_PREFILL_TOKEN_THRESHOLD:-0}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.94}"
 CHUNKED_PREFILL_SIZE="${CHUNKED_PREFILL_SIZE:-32658}"
 MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-50000}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-flashinfer}"
+# Cap CUDA graph batch size to avoid paging in all CPU expert weights during warmup.
+# bs=512 triggers ~450 GB of weight reads (OOM on low-RAM systems).  Raise if RAM > 512 GB.
+CUDA_GRAPH_MAX_BS="${CUDA_GRAPH_MAX_BS:-16}"
 
 export CPUINFER_CPU_INSTRUCT="${CPUINFER_CPU_INSTRUCT:-AVX2}"
 export CPUINFER_ENABLE_AMX="${CPUINFER_ENABLE_AMX:-OFF}"
 export CPUINFER_ENABLE_AVX512="${CPUINFER_ENABLE_AVX512:-OFF}"
+
+# PyTorch 2.9.1 + CuDNN <9.15 has a Conv3d bug; sglang raises a hard error.
+# nn.Conv3d is only used for video inputs; set this to keep text inference working.
+export SGLANG_DISABLE_CUDNN_CHECK="${SGLANG_DISABLE_CUDNN_CHECK:-1}"
 
 exec python3 -m sglang.launch_server \
   --host "$HOST" \
@@ -56,4 +63,5 @@ exec python3 -m sglang.launch_server \
   --chunked-prefill-size "$CHUNKED_PREFILL_SIZE" \
   --max-total-tokens "$MAX_TOTAL_TOKENS" \
   --attention-backend "$ATTENTION_BACKEND" \
+  --cuda-graph-max-bs "$CUDA_GRAPH_MAX_BS" \
   "$@"

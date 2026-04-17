@@ -65,6 +65,8 @@ struct GemmKernelAVX2RawInt4 {
     int k_group_count = 0;
 
     BufferB() = default;
+
+    // Full allocation: b and d packed into a single aligned block.
     BufferB(int n_, int k_, int k_group_size_, void* ptr)
         : b((uint8_t*)ptr), n(n_), k(k_), k_group_size(k_group_size_) {
       if (k_group_size <= 0 || k % k_group_size != 0 || k % 8 != 0) {
@@ -74,11 +76,29 @@ struct GemmKernelAVX2RawInt4 {
       d = (float*)((uint8_t*)ptr + ((size_t)n * k / 2));
     }
 
+    // Scale-only allocation: b points to external (mmap'd) weight data; d owns scale_ptr.
+    // Used when weights are consumed directly from safetensor mmap without copying.
+    BufferB(int n_, int k_, int k_group_size_, void* scale_ptr, std::nullptr_t /*scale_only*/)
+        : b(nullptr), n(n_), k(k_), k_group_size(k_group_size_) {
+      if (k_group_size <= 0 || k % k_group_size != 0 || k % 8 != 0) {
+        throw std::runtime_error("RAWINT4 requires k aligned to group_size and 8");
+      }
+      k_group_count = k / k_group_size;
+      d = (float*)scale_ptr;
+    }
+
+    // Full size: packed INT4 weights + float32 scales.
     static size_t required_size(size_t n, size_t k, int k_group_size) {
       return n * k / 2 + n * (k / k_group_size) * sizeof(float);
     }
 
+    // Scale-only size: only float32 scales (b will point to external weight data).
+    static size_t required_size_scale_only(size_t n, size_t k, int k_group_size) {
+      return n * (k / k_group_size) * sizeof(float);
+    }
+
     void from_raw_mat(const uint8_t* proj, int ith, int nth) {
+      if (b == nullptr) return;  // scale-only mode: b is an external pointer set later
       auto [n_start, n_end] = split_range_n(n, ith, nth);
       const size_t row_bytes = (size_t)k / 2;
       std::memcpy(b + (size_t)n_start * row_bytes, proj + (size_t)n_start * row_bytes,
@@ -211,6 +231,11 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
     return T::BufferA::required_size(m, k, config_.quant_config.group_size);
   }
   size_t buffer_b_required_size_impl(size_t n, size_t k) const {
+    // When per-expert source pointers are available, only allocate float32 scales.
+    // Weights will be served directly from the mmap'd safetensor data (no copy).
+    if (!config_.gate_projs.empty()) {
+      return T::BufferB::required_size_scale_only(n, k, config_.quant_config.group_size);
+    }
     return T::BufferB::required_size(n, k, config_.quant_config.group_size);
   }
   size_t buffer_c_required_size_impl(size_t m, size_t n) const { return T::BufferC::required_size(m, n); }
@@ -219,7 +244,11 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
     return std::make_shared<typename T::BufferA>(m, k, config_.quant_config.group_size, data);
   }
   std::shared_ptr<typename T::BufferB> make_buffer_b_impl(size_t n, size_t k, void* data) const {
-    return std::make_shared<typename T::BufferB>(n, k, config_.quant_config.group_size, data);
+    // Scale-only mode: b is nullptr here; set externally in load_weights().
+    if (!config_.gate_projs.empty()) {
+      return std::make_shared<typename T::BufferB>((int)n, (int)k, config_.quant_config.group_size, data, nullptr);
+    }
+    return std::make_shared<typename T::BufferB>((int)n, (int)k, config_.quant_config.group_size, data);
   }
   std::shared_ptr<typename T::BufferC> make_buffer_c_impl(size_t m, size_t n, void* data) const {
     return std::make_shared<typename T::BufferC>(m, n, data);
@@ -243,49 +272,120 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
     int group_size = config_.quant_config.group_size;
     const uint64_t* physical_to_logical_map = (const uint64_t*)config_.physical_to_logical_map;
     auto pool = config_.pool->get_subpool(tp_part_idx);
-    if (config_.gate_scale == nullptr) {
-      throw std::runtime_error("RAWINT4 AVX2 MoE requires native packed weight and scale pointers");
+
+    const bool use_per_expert = !config_.gate_projs.empty();
+    if (!use_per_expert && config_.gate_proj == nullptr) {
+      throw std::runtime_error("RAWINT4 AVX2 MoE requires weight pointers");
+    }
+    if (!use_per_expert && config_.gate_scale == nullptr) {
+      throw std::runtime_error("RAWINT4 AVX2 MoE requires scale pointers");
     }
 
-    int nth = T::recommended_nth(config_.intermediate_size);
-    pool->do_work_stealing_job(
-        nth * config_.expert_num, nullptr,
-        [this, nth, physical_to_logical_map](int task_id) {
-          uint64_t expert_idx = task_id / nth;
-          uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
-          int ith = task_id % nth;
-          size_t weight_offset = ((size_t)logical_expert_id * config_.intermediate_size * config_.hidden_size) / 2;
-          gate_bb_[expert_idx]->from_raw_mat((uint8_t*)config_.gate_proj + weight_offset, ith, nth);
-          up_bb_[expert_idx]->from_raw_mat((uint8_t*)config_.up_proj + weight_offset, ith, nth);
-        },
-        nullptr);
+    if (use_per_expert) {
+      // Direct-pointer mode: BufferB.b is set to point into the mmap'd safetensor data
+      // (no weight copy). Only float32 scales are allocated and converted.
+      //
+      // For gate/up: source shape [intermediate_size_full, hidden_size/2] row-major.
+      //   TP partition tp_part_idx handles rows [tp_part_idx * n_per_tp, (tp_part_idx+1) * n_per_tp).
+      //   These are contiguous in memory → simple byte offset: tp_part_idx * n_per_tp * (k/2).
+      //   With kt_threadpool_count=1 (tp_part_idx=0): offset = 0.
+      //
+      // For down: source shape [hidden_size, intermediate_size_full/2] row-major.
+      //   TP partition tp_part_idx handles columns [tp_part_idx * n_per_tp/2, ...) per row.
+      //   These are NOT contiguous across rows for tp_count > 1.
+      //   This mode therefore requires kt_threadpool_count=1 (enforced in outer TP wrapper).
+      pool->do_work_stealing_job(
+          config_.expert_num, nullptr,
+          [this, physical_to_logical_map](int expert_idx) {
+            if (config_.should_skip_expert(expert_idx)) return;
+            uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
+            // Gate/Up row offset for this TP partition (bytes).
+            size_t gate_tp_byte_offset =
+                (size_t)tp_part_idx * config_.intermediate_size * config_.hidden_size / 2;
+            gate_bb_[expert_idx]->b =
+                (uint8_t*)config_.gate_projs[0][logical_expert_id] + gate_tp_byte_offset;
+            up_bb_[expert_idx]->b =
+                (uint8_t*)config_.up_projs[0][logical_expert_id] + gate_tp_byte_offset;
+            // Down column offset (bytes per row start). Correct only for tp_count=1.
+            size_t down_tp_byte_offset = (size_t)tp_part_idx * config_.intermediate_size / 2;
+            down_bb_[expert_idx]->b =
+                (uint8_t*)config_.down_projs[0][logical_expert_id] + down_tp_byte_offset;
+          },
+          nullptr);
 
-    nth = T::recommended_nth(config_.hidden_size);
-    pool->do_work_stealing_job(
-        nth * config_.expert_num, nullptr,
-        [this, nth, physical_to_logical_map](int task_id) {
-          uint64_t expert_idx = task_id / nth;
-          uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
-          int ith = task_id % nth;
-          size_t weight_offset = ((size_t)logical_expert_id * config_.hidden_size * config_.intermediate_size) / 2;
-          down_bb_[expert_idx]->from_raw_mat((uint8_t*)config_.down_proj + weight_offset, ith, nth);
-        },
-        nullptr);
+      // Scale conversion: BF16 → float32.
+      pool->do_work_stealing_job(
+          config_.expert_num, nullptr,
+          [this, physical_to_logical_map, group_size](int task_id) {
+            uint64_t expert_idx = task_id;
+            if (config_.should_skip_expert(expert_idx)) return;
+            uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
+            size_t scale_elem_count = ((size_t)config_.hidden_size * config_.intermediate_size) / group_size;
+            // Gate/Up scale offset: rows [tp_part_idx * n_per_tp, ...) of scale[n_total, k/gs].
+            size_t gate_scale_tp_offset =
+                (size_t)tp_part_idx * config_.intermediate_size * (config_.hidden_size / group_size);
+            // Down scale offset: cols [tp_part_idx * (n_per_tp/gs), ...) per row. Correct for tp_count=1.
+            size_t down_scale_tp_offset = (size_t)tp_part_idx * (config_.intermediate_size / group_size);
+            convert_or_copy(gate_bb_[expert_idx]->d,
+                            (const ggml_bf16_t*)config_.gate_scales[0][logical_expert_id] + gate_scale_tp_offset,
+                            scale_elem_count);
+            convert_or_copy(up_bb_[expert_idx]->d,
+                            (const ggml_bf16_t*)config_.up_scales[0][logical_expert_id] + gate_scale_tp_offset,
+                            scale_elem_count);
+            convert_or_copy(down_bb_[expert_idx]->d,
+                            (const ggml_bf16_t*)config_.down_scales[0][logical_expert_id] + down_scale_tp_offset,
+                            scale_elem_count);
+          },
+          nullptr);
+    } else {
+      // Flat-buffer mode: copy TP-sliced weights from flat buffer into allocated BufferB.b.
+      int nth = T::recommended_nth(config_.intermediate_size);
+      pool->do_work_stealing_job(
+          nth * config_.expert_num, nullptr,
+          [this, nth, physical_to_logical_map](int task_id) {
+            uint64_t expert_idx = task_id / nth;
+            if (config_.should_skip_expert(expert_idx)) return;
+            uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
+            int ith = task_id % nth;
+            size_t weight_offset = ((size_t)logical_expert_id * config_.intermediate_size * config_.hidden_size) / 2;
+            gate_bb_[expert_idx]->from_raw_mat((const uint8_t*)config_.gate_proj + weight_offset, ith, nth);
+            up_bb_[expert_idx]->from_raw_mat((const uint8_t*)config_.up_proj + weight_offset, ith, nth);
+          },
+          nullptr);
 
-    pool->do_work_stealing_job(
-        config_.expert_num, nullptr,
-        [this, physical_to_logical_map, group_size](int task_id) {
-          uint64_t expert_idx = task_id;
-          uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
-          size_t scale_elem_count = ((size_t)config_.hidden_size * config_.intermediate_size) / group_size;
-          convert_or_copy(gate_bb_[expert_idx]->d,
-                          (ggml_bf16_t*)config_.gate_scale + logical_expert_id * scale_elem_count, scale_elem_count);
-          convert_or_copy(up_bb_[expert_idx]->d, (ggml_bf16_t*)config_.up_scale + logical_expert_id * scale_elem_count,
-                          scale_elem_count);
-          convert_or_copy(down_bb_[expert_idx]->d,
-                          (ggml_bf16_t*)config_.down_scale + logical_expert_id * scale_elem_count, scale_elem_count);
-        },
-        nullptr);
+      int nth_down = T::recommended_nth(config_.hidden_size);
+      pool->do_work_stealing_job(
+          nth_down * config_.expert_num, nullptr,
+          [this, nth_down, physical_to_logical_map](int task_id) {
+            uint64_t expert_idx = task_id / nth_down;
+            if (config_.should_skip_expert(expert_idx)) return;
+            uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
+            int ith = task_id % nth_down;
+            size_t weight_offset = ((size_t)logical_expert_id * config_.hidden_size * config_.intermediate_size) / 2;
+            down_bb_[expert_idx]->from_raw_mat((const uint8_t*)config_.down_proj + weight_offset, ith, nth_down);
+          },
+          nullptr);
+
+      // Scale conversion in flat-buffer mode.
+      pool->do_work_stealing_job(
+          config_.expert_num, nullptr,
+          [this, physical_to_logical_map, group_size](int task_id) {
+            uint64_t expert_idx = task_id;
+            if (config_.should_skip_expert(expert_idx)) return;
+            uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
+            size_t scale_elem_count = ((size_t)config_.hidden_size * config_.intermediate_size) / group_size;
+            convert_or_copy(gate_bb_[expert_idx]->d,
+                            (ggml_bf16_t*)config_.gate_scale + logical_expert_id * scale_elem_count,
+                            scale_elem_count);
+            convert_or_copy(up_bb_[expert_idx]->d,
+                            (ggml_bf16_t*)config_.up_scale + logical_expert_id * scale_elem_count,
+                            scale_elem_count);
+            convert_or_copy(down_bb_[expert_idx]->d,
+                            (ggml_bf16_t*)config_.down_scale + logical_expert_id * scale_elem_count,
+                            scale_elem_count);
+          },
+          nullptr);
+    }
   }
 
   static inline void fp32_to_bf16(ggml_bf16_t* dst, const float* src, size_t count) { convert_or_copy(dst, src, count); }
@@ -442,86 +542,85 @@ class TP_MOE<AVX2_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX2_RAW_
       throw std::runtime_error("RAWINT4 AVX2 MoE only supports packed INT4 with KGroup scales");
     }
 
-    int& group_size = config.quant_config.group_size;
-    pool->dispense_backend()->do_numa_job([&, this](int i) {
-      auto& tpc = tps[i]->config_;
-      size_t weight_elem_count = (size_t)tpc.intermediate_size * tpc.hidden_size;
-      size_t scales_elem_count = ((size_t)tpc.hidden_size / group_size) * tpc.intermediate_size;
-      tpc.gate_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
-      tpc.up_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
-      tpc.down_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
-      tpc.gate_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
-      tpc.up_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
-      tpc.down_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
+    if (use_per_expert_ptrs) {
+      // Direct-pointer mode: inner load_weights() sets BufferB.b directly from mmap'd data.
+      // The down projection column-gather required for tp_count > 1 is NOT supported in
+      // this mode; enforce single NUMA pool (kt_threadpool_count=1).
+      if (this->tp_count > 1) {
+        throw std::runtime_error(
+            "RAWINT4 per-expert pointer mode requires kt_threadpool_count=1 "
+            "(down projection TP column-gather is unsupported with direct pointers)");
+      }
+      DO_TPS_LOAD_WEIGHTS(pool);
+    } else {
+      // Flat-buffer mode: build a TP-sliced contiguous buffer per TP partition, then
+      // call inner load_weights() which copies into BufferB.b from the flat buffer.
+      int group_size = config.quant_config.group_size;
+      pool->dispense_backend()->do_numa_job([&, this](int i) {
+        auto& tpc = tps[i]->config_;
+        size_t weight_elem_count = (size_t)tpc.intermediate_size * tpc.hidden_size;
+        size_t scales_elem_count = ((size_t)tpc.hidden_size / group_size) * tpc.intermediate_size;
+        tpc.gate_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
+        tpc.up_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
+        tpc.down_proj = new uint8_t[(tpc.expert_num * weight_elem_count) / 2];
+        tpc.gate_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
+        tpc.up_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
+        tpc.down_scale = new ggml_bf16_t[tpc.expert_num * scales_elem_count];
 
-      pool->get_subpool(i)->do_work_stealing_job(
-          tpc.expert_num, nullptr,
-          [&, i](int expert_id_) {
-            size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
-            uint8_t* src_gate = use_per_expert_ptrs
-                                    ? (uint8_t*)config.gate_projs[0][expert_id]
-                                    : (uint8_t*)config.gate_proj +
-                                          ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            uint8_t* src_up = use_per_expert_ptrs
-                                  ? (uint8_t*)config.up_projs[0][expert_id]
-                                  : (uint8_t*)config.up_proj +
-                                        ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            uint8_t* src_down =
-                use_per_expert_ptrs
-                    ? (uint8_t*)config.down_projs[0][expert_id]
-                    : (uint8_t*)config.down_proj +
-                          ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            ggml_bf16_t* src_gate_scale =
-                use_per_expert_ptrs
-                    ? (ggml_bf16_t*)config.gate_scales[0][expert_id]
-                    : (ggml_bf16_t*)config.gate_scale +
-                          expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-            ggml_bf16_t* src_up_scale =
-                use_per_expert_ptrs
-                    ? (ggml_bf16_t*)config.up_scales[0][expert_id]
-                    : (ggml_bf16_t*)config.up_scale +
-                          expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-            ggml_bf16_t* src_down_scale =
-                use_per_expert_ptrs
-                    ? (ggml_bf16_t*)config.down_scales[0][expert_id]
-                    : (ggml_bf16_t*)config.down_scale +
-                          expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
+        pool->get_subpool(i)->do_work_stealing_job(
+            tpc.expert_num, nullptr,
+            [&, i](int expert_id_) {
+              size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
+              uint8_t* src_gate = (uint8_t*)config.gate_proj +
+                                  ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+              uint8_t* src_up = (uint8_t*)config.up_proj +
+                                ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+              uint8_t* src_down = (uint8_t*)config.down_proj +
+                                  ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+              ggml_bf16_t* src_gate_scale = (ggml_bf16_t*)config.gate_scale +
+                                             expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
+              ggml_bf16_t* src_up_scale = (ggml_bf16_t*)config.up_scale +
+                                           expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
+              ggml_bf16_t* src_down_scale = (ggml_bf16_t*)config.down_scale +
+                                             expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
 
-            std::memcpy((uint8_t*)tpc.gate_proj + ((expert_id * weight_elem_count) >> 1),
-                        src_gate + ((i * weight_elem_count) >> 1), weight_elem_count >> 1);
-            std::memcpy((uint8_t*)tpc.up_proj + ((expert_id * weight_elem_count) >> 1),
-                        src_up + ((i * weight_elem_count) >> 1), weight_elem_count >> 1);
-            std::memcpy((ggml_bf16_t*)tpc.gate_scale + expert_id * scales_elem_count,
-                        src_gate_scale + i * scales_elem_count, sizeof(ggml_bf16_t) * scales_elem_count);
-            std::memcpy((ggml_bf16_t*)tpc.up_scale + expert_id * scales_elem_count,
-                        src_up_scale + i * scales_elem_count, sizeof(ggml_bf16_t) * scales_elem_count);
+              std::memcpy((uint8_t*)tpc.gate_proj + ((expert_id * weight_elem_count) >> 1),
+                          src_gate + ((i * weight_elem_count) >> 1), weight_elem_count >> 1);
+              std::memcpy((uint8_t*)tpc.up_proj + ((expert_id * weight_elem_count) >> 1),
+                          src_up + ((i * weight_elem_count) >> 1), weight_elem_count >> 1);
+              std::memcpy((ggml_bf16_t*)tpc.gate_scale + expert_id * scales_elem_count,
+                          src_gate_scale + i * scales_elem_count, sizeof(ggml_bf16_t) * scales_elem_count);
+              std::memcpy((ggml_bf16_t*)tpc.up_scale + expert_id * scales_elem_count,
+                          src_up_scale + i * scales_elem_count, sizeof(ggml_bf16_t) * scales_elem_count);
 
-            for (size_t col = 0; col < (size_t)config.hidden_size; col++) {
-              std::memcpy((uint8_t*)tpc.down_proj + ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
-                          src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
-                          tpc.intermediate_size >> 1);
-              std::memcpy((ggml_bf16_t*)tpc.down_scale +
-                              (expert_id * scales_elem_count + col * (tpc.intermediate_size / group_size)),
-                          src_down_scale + (col * (config.intermediate_size / group_size) +
-                                            i * (tpc.intermediate_size / group_size)),
-                          sizeof(ggml_bf16_t) * (tpc.intermediate_size / group_size));
-            }
-          },
-          nullptr);
-      printf("AVX2 RAWINT4 TP %d load weight done.\n", i);
-    });
+              for (size_t col = 0; col < (size_t)config.hidden_size; col++) {
+                std::memcpy((uint8_t*)tpc.down_proj +
+                                ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
+                            src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
+                            tpc.intermediate_size >> 1);
+                std::memcpy((ggml_bf16_t*)tpc.down_scale +
+                                (expert_id * scales_elem_count + col * (tpc.intermediate_size / group_size)),
+                            src_down_scale + (col * (config.intermediate_size / group_size) +
+                                              i * (tpc.intermediate_size / group_size)),
+                            sizeof(ggml_bf16_t) * (tpc.intermediate_size / group_size));
+              }
+            },
+            nullptr);
+        printf("AVX2 RAWINT4 TP %d load weight done.\n", i);
+      });
 
-    DO_TPS_LOAD_WEIGHTS(pool);
+      DO_TPS_LOAD_WEIGHTS(pool);
 
-    pool->dispense_backend()->do_numa_job([&, this](int i) {
-      auto& tpc = tps[i]->config_;
-      delete[] (uint8_t*)tpc.gate_proj;
-      delete[] (uint8_t*)tpc.up_proj;
-      delete[] (uint8_t*)tpc.down_proj;
-      delete[] (ggml_bf16_t*)tpc.gate_scale;
-      delete[] (ggml_bf16_t*)tpc.up_scale;
-      delete[] (ggml_bf16_t*)tpc.down_scale;
-    });
+      pool->dispense_backend()->do_numa_job([&, this](int i) {
+        auto& tpc = tps[i]->config_;
+        delete[] (uint8_t*)tpc.gate_proj;
+        delete[] (uint8_t*)tpc.up_proj;
+        delete[] (uint8_t*)tpc.down_proj;
+        delete[] (ggml_bf16_t*)tpc.gate_scale;
+        delete[] (ggml_bf16_t*)tpc.up_scale;
+        delete[] (ggml_bf16_t*)tpc.down_scale;
+      });
+    }
 
     this->weights_loaded = true;
   }

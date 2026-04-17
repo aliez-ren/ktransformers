@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:cu130-nightly
+FROM lmsysorg/sglang:v0.5.9
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CPUINFER_CPU_INSTRUCT=AVX2 \
@@ -7,10 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CPUINFER_ENABLE_AVX512_VNNI=OFF \
     CPUINFER_ENABLE_AVX512_BF16=OFF \
     CPUINFER_ENABLE_AVX512_VBMI=OFF
-ENV CUDA_PYTHON_ROOT=/usr/local/lib/python3.12/dist-packages/nvidia/cu13
-ENV CPATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/include \
-    LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib \
-    LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
@@ -28,61 +24,19 @@ COPY . /workspace/ktransformers
 
 RUN git submodule update --init --recursive || true
 
-RUN python3 -m pip install --upgrade pip "setuptools<81" wheel pybind11 \
+# Replace sglang with sglang-kt (ktransformers fork) and add missing deps
+RUN python3 -m pip install --upgrade pip "setuptools<81" \
+    && python3 -m pip install sglang-kt --no-deps \
     && python3 -m pip install \
       compressed-tensors \
       gguf \
       httpx \
-      packaging \
       pyyaml \
       rich \
       safetensors \
-      "typer[all]" \
-    && python3 -m pip install sglang-kt --no-deps \
-    && python3 -m pip install --no-deps \
-      blobfile \
-      build \
-      datasets \
-      decord2 \
-      grpcio-health-checking \
-      grpcio-reflection \
-      IPython \
-      orjson \
-      outlines \
-      outlines-core \
-      py-spy \
-      scipy \
-      sgl-kernel \
-      smg-grpc-proto \
-      soundfile \
-      torch-memory-saver \
-      torchao \
-      torchcodec \
-    && python3 -m pip install --no-deps \
-      asttokens \
-      decorator \
-      executing \
-      genson \
-      ipython-pygments-lexers \
-      jedi \
-      jsonpath-ng \
-      lxml \
-      matplotlib-inline \
-      multiprocess \
-      pandas \
-      parso \
-      pexpect \
-      prompt-toolkit \
-      ptyprocess \
-      pure-eval \
-      pyarrow \
-      pycryptodomex \
-      pyproject-hooks \
-      stack-data \
-      traitlets \
-      wcwidth \
-      xxhash
+      "typer[all]"
 
+# Build kt_kernel with AVX2-only support (no AMX/AVX512)
 RUN cd /workspace/ktransformers/kt-kernel \
     && CPUINFER_CPU_INSTRUCT=AVX2 \
        CPUINFER_ENABLE_AMX=OFF \

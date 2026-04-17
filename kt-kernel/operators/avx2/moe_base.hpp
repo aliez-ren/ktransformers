@@ -116,16 +116,27 @@ class AVX2_MOE_BASE {
       down_ba_.push_back(make_buffer_a(config_.max_len, config_.intermediate_size, nullptr));
       down_bc_.push_back(make_buffer_c(config_.max_len, config_.hidden_size, nullptr));
 
-      void* gate_bb_ptr =
-          std::aligned_alloc(64, buffer_b_required_size(config_.intermediate_size, config_.hidden_size));
-      gate_bb_.push_back(make_buffer_b(config_.intermediate_size, config_.hidden_size, gate_bb_ptr));
+      // GPU experts are always skipped during CPU forward(); don't allocate weight buffers for them.
+      // For CPU experts, buffer_b_required_size_impl() and make_buffer_b_impl() are CRTP-dispatched
+      // and may return scale-only size (when using direct weight pointer mode).
+      const bool is_gpu_expert = config_.gpu_experts_mask && config_.gpu_experts_mask[i];
+      if (is_gpu_expert) {
+        gate_bb_.push_back(nullptr);
+        up_bb_.push_back(nullptr);
+        down_bb_.push_back(nullptr);
+      } else {
+        void* gate_bb_ptr =
+            std::aligned_alloc(64, buffer_b_required_size(config_.intermediate_size, config_.hidden_size));
+        gate_bb_.push_back(make_buffer_b(config_.intermediate_size, config_.hidden_size, gate_bb_ptr));
 
-      void* up_bb_ptr = std::aligned_alloc(64, buffer_b_required_size(config_.intermediate_size, config_.hidden_size));
-      up_bb_.push_back(make_buffer_b(config_.intermediate_size, config_.hidden_size, up_bb_ptr));
+        void* up_bb_ptr =
+            std::aligned_alloc(64, buffer_b_required_size(config_.intermediate_size, config_.hidden_size));
+        up_bb_.push_back(make_buffer_b(config_.intermediate_size, config_.hidden_size, up_bb_ptr));
 
-      void* down_bb_ptr =
-          std::aligned_alloc(64, buffer_b_required_size(config_.hidden_size, config_.intermediate_size));
-      down_bb_.push_back(make_buffer_b(config_.hidden_size, config_.intermediate_size, down_bb_ptr));
+        void* down_bb_ptr =
+            std::aligned_alloc(64, buffer_b_required_size(config_.hidden_size, config_.intermediate_size));
+        down_bb_.push_back(make_buffer_b(config_.hidden_size, config_.intermediate_size, down_bb_ptr));
+      }
     }
 
     pool_count_ = config_.max_len * config_.num_experts_per_tok + config_.expert_num * T::M_STEP;
