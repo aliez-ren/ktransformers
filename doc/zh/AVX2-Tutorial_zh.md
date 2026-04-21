@@ -174,11 +174,12 @@ python -m sglang.launch_server \
   --kt-cpuinfer 64 \
   --kt-threadpool-count 1 \
   --kt-num-gpu-experts 228 \
+  --kt-enable-dynamic-expert-update \
   --kt-method RAWINT4 \
   --attention-backend flashinfer \
   --trust-remote-code \
   --mem-fraction-static 0.95 \
-  --chunked-prefill-size 32768 \
+  --chunked-prefill-size 8192 \
   --max-running-requests 4 \
   --context-length 262144 \
   --enable-mixed-chunk \
