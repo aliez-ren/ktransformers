@@ -179,9 +179,12 @@ python -m sglang.launch_server \
   --trust-remote-code \
   --mem-fraction-static 0.95 \
   --chunked-prefill-size 32768 \
+  --max-running-requests 4 \
+  --context-length 262144 \
   --enable-mixed-chunk \
   --tensor-parallel-size 4 \
-  --enable-p2p-check
+  --enable-p2p-check \
+  --disable-shared-experts-fusion
 ```
 
 ### Sending Requests
