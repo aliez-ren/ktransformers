@@ -12,6 +12,7 @@
   - [示例：Qwen3-30B-A3B (BF16)](#示例qwen3-30b-a3b-bf16)
   - [示例：Qwen3.5-35B-A3B-FP8 (FP8)](#示例qwen35-35b-a3b-fp8-fp8)
   - [示例：Qwen3-30B-A3B-GPTQ-Int4 (GPTQ_INT4)](#示例qwen3-30b-a3b-gptq-int4-gptq_int4)
+  - [示例：Kimi-K2.5 (RAWINT4)](#示例kimi-k25-rawint4)
   - [发送请求](#发送请求)
 - [性能调优](#性能调优)
 - [常见问题](#常见问题)
@@ -23,6 +24,7 @@
 | `BF16` | BF16 原精度 | 零精度损失，直接使用 BF16 权重 |
 | `FP8` | FP8 分块量化 |  |
 | `GPTQ_INT4` | INT4 GPTQ |  |
+| `RAWINT4` | Raw INT4 + BF16 缩放因子 | Kimi-K2.5 专用；权重以压缩 SafeTensor 格式存储 |
 
 
 ## 硬件要求
@@ -71,7 +73,7 @@ kt doctor
 
 ## 启动推理服务
 
-使用 `--kt-method BF16`、`FP8` 或 `GPTQ_INT4`，KT-Kernel 会**自动检测** CPU 并在缺少 AVX512/AMX 时回退到 AVX2 后端。
+使用 `--kt-method BF16`、`FP8`、`GPTQ_INT4` 或 `RAWINT4`，KT-Kernel 会**自动检测** CPU 并在缺少 AVX512/AMX 时回退到 AVX2 后端。
 
 ### 示例：Qwen3-30B-A3B (BF16)
 
@@ -145,6 +147,32 @@ python -m sglang.launch_server \
   --kt-threadpool-count 1 \
   --kt-num-gpu-experts 2 \
   --kt-method GPTQ_INT4 \
+  --attention-backend triton \
+  --trust-remote-code \
+  --mem-fraction-static 0.85 \
+  --chunked-prefill-size 4096 \
+  --max-running-requests 1 \
+  --max-total-tokens 32000 \
+  --enable-mixed-chunk \
+  --tensor-parallel-size 1 \
+  --disable-shared-experts-fusion
+```
+
+### 示例：Kimi-K2.5 (RAWINT4)
+
+```bash
+# 下载模型
+huggingface-cli download moonshotai/Kimi-K2.5 --local-dir /path/to/Kimi-K2.5
+
+# 启动服务
+python -m sglang.launch_server \
+  --host 0.0.0.0 --port 30000 \
+  --model /path/to/Kimi-K2.5 \
+  --kt-weight-path /path/to/Kimi-K2.5 \
+  --kt-cpuinfer 16 \
+  --kt-threadpool-count 1 \
+  --kt-num-gpu-experts 2 \
+  --kt-method RAWINT4 \
   --attention-backend triton \
   --trust-remote-code \
   --mem-fraction-static 0.85 \
