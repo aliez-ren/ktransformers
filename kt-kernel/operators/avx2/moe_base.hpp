@@ -116,11 +116,13 @@ class AVX2_MOE_BASE {
       down_ba_.push_back(make_buffer_a(config_.max_len, config_.intermediate_size, nullptr));
       down_bc_.push_back(make_buffer_c(config_.max_len, config_.hidden_size, nullptr));
 
-      // GPU experts are always skipped during CPU forward(); don't allocate weight buffers for them.
-      // For CPU experts, buffer_b_required_size_impl() and make_buffer_b_impl() are CRTP-dispatched
-      // and may return scale-only size (when using direct weight pointer mode).
+      // GPU experts are skipped during CPU forward(). RAWINT4 direct-pointer
+      // mode still needs BufferB objects for layerwise GPU prefill, which can
+      // stream any logical expert into the temporary full-GPU layer.
       const bool is_gpu_expert = config_.gpu_experts_mask && config_.gpu_experts_mask[i];
-      if (is_gpu_expert) {
+      const bool keep_gpu_expert_for_prefill =
+          config_.quant_config.bits == 4 && !config_.gate_projs.empty() && !config_.quant_config.zero_point;
+      if (is_gpu_expert && !keep_gpu_expert_for_prefill) {
         gate_bb_.push_back(nullptr);
         up_bb_.push_back(nullptr);
         down_bb_.push_back(nullptr);

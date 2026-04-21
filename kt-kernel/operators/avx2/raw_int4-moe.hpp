@@ -297,7 +297,10 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
       pool->do_work_stealing_job(
           config_.expert_num, nullptr,
           [this, physical_to_logical_map](int expert_idx) {
-            if (config_.should_skip_expert(expert_idx)) return;
+            if (expert_idx < 0 || expert_idx >= config_.expert_num || gate_bb_[expert_idx] == nullptr ||
+                up_bb_[expert_idx] == nullptr || down_bb_[expert_idx] == nullptr) {
+              return;
+            }
             uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
             // Gate/Up row offset for this TP partition (bytes).
             size_t gate_tp_byte_offset =
@@ -318,7 +321,10 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
           config_.expert_num, nullptr,
           [this, physical_to_logical_map, group_size](int task_id) {
             uint64_t expert_idx = task_id;
-            if (config_.should_skip_expert(expert_idx)) return;
+            if (expert_idx >= (uint64_t)config_.expert_num || gate_bb_[expert_idx] == nullptr ||
+                up_bb_[expert_idx] == nullptr || down_bb_[expert_idx] == nullptr) {
+              return;
+            }
             uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
             size_t scale_elem_count = ((size_t)config_.hidden_size * config_.intermediate_size) / group_size;
             // Gate/Up scale offset: rows [tp_part_idx * n_per_tp, ...) of scale[n_total, k/gs].
@@ -395,6 +401,10 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
                                const std::vector<uintptr_t>& w13_scale_ptrs,
                                const std::vector<uintptr_t>& w2_weight_ptrs,
                                const std::vector<uintptr_t>& w2_scale_ptrs) const {
+    if (expert_id < 0 || expert_id >= config_.expert_num || gate_bb_[expert_id] == nullptr ||
+        up_bb_[expert_id] == nullptr || down_bb_[expert_id] == nullptr) {
+      throw std::runtime_error("RAWINT4 write_weights_to_buffer requested an expert without loaded weights");
+    }
     const int group_size = config_.quant_config.group_size;
     auto pool = config_.pool->get_subpool(tp_part_idx);
 
