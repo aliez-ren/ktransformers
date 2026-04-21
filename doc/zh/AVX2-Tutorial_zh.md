@@ -160,6 +160,9 @@ python -m sglang.launch_server \
 
 ### 示例：Kimi-K2.5 (RAWINT4)
 
+> **说明**：以下命令针对 4x RTX PRO 6000 Blackwell（各 96GB）+ AMD Threadripper PRO 5995WX（64 核，1 NUMA 节点）优化。
+> 使用 `--language-only` 跳过视觉塔权重加载，节省约 3–4GB 显存；若需要图文多模态能力，删除该参数即可。
+
 ```bash
 # 下载模型
 huggingface-cli download moonshotai/Kimi-K2.5 --local-dir /path/to/Kimi-K2.5
@@ -169,19 +172,22 @@ python -m sglang.launch_server \
   --host 0.0.0.0 --port 30000 \
   --model /path/to/Kimi-K2.5 \
   --kt-weight-path /path/to/Kimi-K2.5 \
-  --kt-cpuinfer 16 \
+  --kt-cpuinfer 64 \
   --kt-threadpool-count 1 \
-  --kt-num-gpu-experts 2 \
+  --kt-num-gpu-experts 30 \
   --kt-method RAWINT4 \
-  --attention-backend triton \
+  --kt-gpu-prefill-token-threshold 400 \
+  --attention-backend flashinfer \
   --trust-remote-code \
-  --mem-fraction-static 0.85 \
-  --chunked-prefill-size 4096 \
-  --max-running-requests 1 \
-  --max-total-tokens 32000 \
+  --mem-fraction-static 0.90 \
+  --chunked-prefill-size 32768 \
+  --max-running-requests 2 \
+  --max-total-tokens 65536 \
   --enable-mixed-chunk \
-  --tensor-parallel-size 1 \
-  --disable-shared-experts-fusion
+  --tensor-parallel-size 4 \
+  --enable-p2p-check \
+  --disable-shared-experts-fusion \
+  --language-only
 ```
 
 ### 发送请求
