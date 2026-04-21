@@ -416,9 +416,9 @@ if(KTRANSFORMERS_USE_CUDA)
     add_compile_definitions(KTRANSFORMERS_USE_CUDA=1)
 
     # Set default CUDA architectures if not specified
-    # Target: SM 80/86 (Ampere), 89 (Ada), 90 (Hopper)
+    # Target: SM 80/86 (Ampere), 89 (Ada), 90 (Hopper), 120 (Blackwell)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90" CACHE STRING "CUDA architectures" FORCE)
+        set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90;120" CACHE STRING "CUDA architectures" FORCE)
         message(STATUS "CUDA architectures (default): ${CMAKE_CUDA_ARCHITECTURES}")
     else()
         message(STATUS "CUDA architectures (user): ${CMAKE_CUDA_ARCHITECTURES}")
