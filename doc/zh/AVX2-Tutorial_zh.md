@@ -178,7 +178,7 @@ python -m sglang.launch_server \
   --kt-gpu-prefill-token-threshold 400 \
   --attention-backend flashinfer \
   --trust-remote-code \
-  --mem-fraction-static 0.90 \
+  --mem-fraction-static 0.95 \
   --chunked-prefill-size 32768 \
   --max-running-requests 2 \
   --max-total-tokens 65536 \

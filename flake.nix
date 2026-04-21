@@ -40,6 +40,10 @@
                   libcublas.include  # cublas_v2.h, cublasLt.h
                   libcublas.lib      # libcublas.so
                   libcublas.stubs
+
+                  # ── cuRAND (required by flashinfer sampling JIT kernels) ──
+                  libcurand.include  # curand.h
+                  libcurand.lib      # libcurand.so
                 ]);
             };
           in
