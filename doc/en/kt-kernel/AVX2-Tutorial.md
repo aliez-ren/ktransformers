@@ -160,6 +160,8 @@ python -m sglang.launch_server \
 
 ### Example: Kimi-K2.5 (RAWINT4)
 
+> **Note**: The following command is optimized for 4x RTX PRO 6000 Blackwell (96GB each) + AMD Threadripper PRO 5995WX (64 cores, 1 NUMA node) + 256GB RAM.
+
 ```bash
 # Download the model
 huggingface-cli download moonshotai/Kimi-K2.5 --local-dir /path/to/Kimi-K2.5
@@ -169,19 +171,17 @@ python -m sglang.launch_server \
   --host 0.0.0.0 --port 30000 \
   --model /path/to/Kimi-K2.5 \
   --kt-weight-path /path/to/Kimi-K2.5 \
-  --kt-cpuinfer 16 \
+  --kt-cpuinfer 64 \
   --kt-threadpool-count 1 \
-  --kt-num-gpu-experts 2 \
+  --kt-num-gpu-experts 228 \
   --kt-method RAWINT4 \
-  --attention-backend triton \
+  --attention-backend flashinfer \
   --trust-remote-code \
-  --mem-fraction-static 0.85 \
-  --chunked-prefill-size 4096 \
-  --max-running-requests 1 \
-  --max-total-tokens 32000 \
+  --mem-fraction-static 0.95 \
+  --chunked-prefill-size 32768 \
   --enable-mixed-chunk \
-  --tensor-parallel-size 1 \
-  --disable-shared-experts-fusion
+  --tensor-parallel-size 4 \
+  --enable-p2p-check
 ```
 
 ### Sending Requests

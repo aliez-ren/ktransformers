@@ -173,19 +173,15 @@ python -m sglang.launch_server \
   --kt-weight-path /path/to/Kimi-K2.5 \
   --kt-cpuinfer 64 \
   --kt-threadpool-count 1 \
-  --kt-num-gpu-experts 224 \
+  --kt-num-gpu-experts 228 \
   --kt-method RAWINT4 \
-  --kt-gpu-prefill-token-threshold 400 \
   --attention-backend flashinfer \
   --trust-remote-code \
   --mem-fraction-static 0.95 \
   --chunked-prefill-size 32768 \
-  --max-running-requests 2 \
-  --max-total-tokens 65536 \
   --enable-mixed-chunk \
   --tensor-parallel-size 4 \
-  --enable-p2p-check \
-  --disable-shared-experts-fusion
+  --enable-p2p-check
 ```
 
 

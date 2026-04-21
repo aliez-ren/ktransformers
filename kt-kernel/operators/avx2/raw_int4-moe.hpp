@@ -17,6 +17,18 @@
 
 namespace avx2 {
 
+// Local, RAWINT4-only variant of gptq_sym_dequant_8x4bit that skips the
+// per-group scale multiply. Callers fold the scale in via a single FMA after
+// the K-loop so the inner path avoids a broadcast+mul per packed int32.
+static inline __m256 rawint4_dequant_8x4bit_unscaled(uint32_t packed_weight) {
+  const __m256i shifts = _mm256_set_epi32(28, 24, 20, 16, 12, 8, 4, 0);
+  __m256i packed_v = _mm256_set1_epi32(packed_weight);
+  __m256i nibbles = _mm256_and_si256(_mm256_srlv_epi32(packed_v, shifts),
+                                     _mm256_set1_epi32(0xF));
+  __m256 w = _mm256_cvtepi32_ps(nibbles);
+  return _mm256_sub_ps(w, _mm256_set1_ps(8.0f));
+}
+
 struct GemmKernelAVX2RawInt4 {
   using dt = uint8_t;
   using output_t = float;
@@ -147,9 +159,21 @@ static inline void gemm_raw_int4(int m, int n, int k, GemmKernelAVX2RawInt4::Buf
     const uint8_t* b_row = b.b + (size_t)ni * row_bytes;
     const float* b_scales = b.d + (size_t)ni * group_count;
 
+    // Prefetch the head of the next B row while we chew through this one.
+    // Streams the decoupled weight pages for large N without blocking.
+    if (ni + 1 < n_end) {
+      const uint8_t* b_next = b.b + (size_t)(ni + 1) * row_bytes;
+      _mm_prefetch((const char*)b_next, _MM_HINT_T0);
+      _mm_prefetch((const char*)(b_next + 64), _MM_HINT_T0);
+    }
+
     for (int mi = 0; mi < m; mi++) {
       const ggml_bf16_t* a_row = a.data + (size_t)mi * a.k;
-      float sum = 0.0f;
+
+      // Running vector total: each group folds in via a single FMA with its
+      // scale broadcast, so we only do one horizontal reduction per (mi, ni).
+      __m256 total_acc = _mm256_setzero_ps();
+      float scalar_tail = 0.0f;
 
       for (int g = 0; g < group_count; g++) {
         const float scale = b_scales[g];
@@ -167,30 +191,37 @@ static inline void gemm_raw_int4(int m, int n, int k, GemmKernelAVX2RawInt4::Buf
           std::memcpy(&p1, b_row + (k_base + ki + 8) / 2, sizeof(uint32_t));
           std::memcpy(&p2, b_row + (k_base + ki + 16) / 2, sizeof(uint32_t));
           std::memcpy(&p3, b_row + (k_base + ki + 24) / 2, sizeof(uint32_t));
-          acc1 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki), gptq_sym_dequant_8x4bit(p0, scale), acc1);
-          acc2 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 8), gptq_sym_dequant_8x4bit(p1, scale), acc2);
-          acc3 =
-              _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 16), gptq_sym_dequant_8x4bit(p2, scale), acc3);
-          acc4 =
-              _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 24), gptq_sym_dequant_8x4bit(p3, scale), acc4);
+          acc1 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki),
+                                 rawint4_dequant_8x4bit_unscaled(p0), acc1);
+          acc2 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 8),
+                                 rawint4_dequant_8x4bit_unscaled(p1), acc2);
+          acc3 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 16),
+                                 rawint4_dequant_8x4bit_unscaled(p2), acc3);
+          acc4 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 24),
+                                 rawint4_dequant_8x4bit_unscaled(p3), acc4);
         }
+        __m256 g_acc = _mm256_add_ps(_mm256_add_ps(acc1, acc3), _mm256_add_ps(acc2, acc4));
 
-        float group_sum = hsum_avx2(_mm256_add_ps(_mm256_add_ps(acc1, acc3), _mm256_add_ps(acc2, acc4)));
         for (; ki + 8 <= group_size; ki += 8) {
           uint32_t packed;
           std::memcpy(&packed, b_row + (k_base + ki) / 2, sizeof(uint32_t));
-          group_sum += hsum_avx2(_mm256_mul_ps(load_bf16_to_fp32(a_row + k_base + ki),
-                                               gptq_sym_dequant_8x4bit(packed, scale)));
+          g_acc = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki),
+                                  rawint4_dequant_8x4bit_unscaled(packed), g_acc);
         }
+
+        // Fold this group's unscaled accumulator into the running total with
+        // one scale-broadcast FMA — saves (group_count - 1) hsum reductions
+        // compared to reducing per group.
+        total_acc = _mm256_fmadd_ps(g_acc, _mm256_broadcast_ss(&scale), total_acc);
+
         for (; ki < group_size; ki++) {
           const uint8_t packed = b_row[(k_base + ki) / 2];
           const int nibble = ((k_base + ki) & 1) ? (packed >> 4) : (packed & 0x0F);
-          group_sum += GGML_BF16_TO_FP32(a_row[k_base + ki]) * (float)(nibble - 8) * scale;
+          scalar_tail += GGML_BF16_TO_FP32(a_row[k_base + ki]) * (float)(nibble - 8) * scale;
         }
-        sum += group_sum;
       }
 
-      c.data[(size_t)mi * n + ni] = sum;
+      c.data[(size_t)mi * n + ni] = hsum_avx2(total_acc) + scalar_tail;
     }
   }
 }
