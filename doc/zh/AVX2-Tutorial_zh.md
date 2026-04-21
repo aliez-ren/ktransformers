@@ -160,8 +160,7 @@ python -m sglang.launch_server \
 
 ### 示例：Kimi-K2.5 (RAWINT4)
 
-> **说明**：以下命令针对 4x RTX PRO 6000 Blackwell（各 96GB）+ AMD Threadripper PRO 5995WX（64 核，1 NUMA 节点）优化。
-> 使用 `--language-only` 跳过视觉塔权重加载，节省约 3–4GB 显存；若需要图文多模态能力，删除该参数即可。
+> **说明**：以下命令针对 4x RTX PRO 6000 Blackwell（各 96GB）+ AMD Threadripper PRO 5995WX（64 核，1 NUMA 节点）+ 256GB RAM 优化。
 
 ```bash
 # 下载模型
@@ -174,7 +173,7 @@ python -m sglang.launch_server \
   --kt-weight-path /path/to/Kimi-K2.5 \
   --kt-cpuinfer 64 \
   --kt-threadpool-count 1 \
-  --kt-num-gpu-experts 30 \
+  --kt-num-gpu-experts 224 \
   --kt-method RAWINT4 \
   --kt-gpu-prefill-token-threshold 400 \
   --attention-backend flashinfer \
@@ -186,9 +185,9 @@ python -m sglang.launch_server \
   --enable-mixed-chunk \
   --tensor-parallel-size 4 \
   --enable-p2p-check \
-  --disable-shared-experts-fusion \
-  --language-only
+  --disable-shared-experts-fusion
 ```
+
 
 ### 发送请求
 

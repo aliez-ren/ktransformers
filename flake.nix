@@ -95,6 +95,16 @@
 
               export CUDA_HOME="${cudaHome}"
               export PATH="${cudaHome}/bin''${PATH:+:$PATH}"
+
+              # Triton hardcodes /sbin/ldconfig to find libcuda.so.1; that path
+              # doesn't exist in Nix.  Setting TRITON_LIBCUDA_PATH bypasses the
+              # ldconfig call entirely.
+              export TRITON_LIBCUDA_PATH="/run/opengl-driver/lib"
+
+              # PyTorch 2.9.1 + CuDNN < 9.15 has a known Conv3d bug that SGLang
+              # detects and rejects at startup.  The vision tower doesn't use
+              # Conv3d during language-only inference, so the check can be skipped.
+              export SGLANG_DISABLE_CUDNN_CHECK=1
             '';
           };
       });
