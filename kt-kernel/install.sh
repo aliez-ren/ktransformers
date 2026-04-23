@@ -99,14 +99,6 @@ install_dependencies() {
     fi
   fi
 
-  if command -v conda &> /dev/null; then
-    echo "Installing cmake via conda..."
-    conda install -y cmake
-  else
-    echo "Warning: conda not found. Skipping cmake installation via conda."
-    echo "Please install conda or manually install cmake."
-  fi
-
   # Detect OS type
   if [ -f /etc/os-release ]; then
     . /etc/os-release
