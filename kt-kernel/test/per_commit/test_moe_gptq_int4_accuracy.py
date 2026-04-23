@@ -12,7 +12,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python")
 
 import pytest
 import torch
-import kt_kernel_ext
+
+try:
+    import kt_kernel_ext
+except ModuleNotFoundError:
+    import kt_kernel
+
+    kt_kernel_ext = kt_kernel.kt_kernel_ext
 
 KT_KERNEL_ROOT = Path(__file__).resolve().parents[2]
 
