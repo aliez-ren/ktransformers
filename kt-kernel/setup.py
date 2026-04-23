@@ -637,7 +637,7 @@ class CMakeBuild(build_ext):
                 cmake_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={hostcxx}")
                 print(f"-- Using CUDA host compiler from CUDAHOSTCXX: {hostcxx}")
             # Set CUDA architectures (default: Ampere/Ada/Hopper)
-            archs_env = os.environ.get("CPUINFER_CUDA_ARCHS", "80;86;89;90").strip()
+            archs_env = os.environ.get("CPUINFER_CUDA_ARCHS", "80;86;89;90;120").strip()
             if archs_env and not any("CMAKE_CUDA_ARCHITECTURES" in a for a in cmake_args):
                 cmake_args.append(f"-DCMAKE_CUDA_ARCHITECTURES={archs_env}")
                 print(f"-- Set CUDA architectures: {archs_env}")

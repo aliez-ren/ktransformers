@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 # Pre-commit hook: run clang-format via kt-kernel's CMake 'format' target and Black for Python
 # before allowing commit. If formatting makes changes, stage them and abort so user can review.
 set -euo pipefail
