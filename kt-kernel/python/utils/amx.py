@@ -91,6 +91,26 @@ def _select_gptq_int4_backend(group_size: Optional[int] = None):
     return None
 
 
+def _select_rawint4_backend(group_size: Optional[int] = None):
+    forced = os.getenv("KT_RAWINT4_BACKEND", "").strip().lower()
+
+    if forced == "amx":
+        if not _HAS_RAWINT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=amx requested, but AMXInt4_KGroup_MOE is not compiled in.")
+        return AMXInt4_KGroup_MOE
+
+    if forced == "avx2":
+        if not _HAS_AVX2_RAWINT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avx2 requested, but AVX2RawInt4_MOE is not compiled in.")
+        return AVX2RawInt4_MOE
+
+    if _HAS_RAWINT4_SUPPORT:
+        return AMXInt4_KGroup_MOE
+    if _HAS_AVX2_RAWINT4_SUPPORT:
+        return AVX2RawInt4_MOE
+    return None
+
+
 class AMXMoEWrapper(BaseMoEWrapper):
     """
     AMX-based MoE wrapper implementation.
@@ -592,10 +612,13 @@ class NativeMoEWrapper(BaseMoEWrapper):
             moe_config.quant_config.bits = 4
             moe_config.quant_config.group_size = group_size
             moe_config.quant_config.zero_point = False
-            if _HAS_RAWINT4_SUPPORT:
-                self.moe = AMXInt4_KGroup_MOE(moe_config)
-            else:
-                self.moe = AVX2RawInt4_MOE(moe_config)
+            backend_cls = _select_rawint4_backend(group_size)
+            if backend_cls is None:
+                raise RuntimeError(
+                    "No RAWINT4 backend is available after runtime selection. "
+                    "AMX (AMXInt4_KGroup_MOE) is preferred; AVX2 (AVX2RawInt4_MOE) is used as the fallback when available."
+                )
+            self.moe = backend_cls(moe_config)
         elif self.method == "FP8":
             moe_config.quant_config.bits = 8
             moe_config.quant_config.group_size = 128
