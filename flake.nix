@@ -50,6 +50,7 @@
           pkgs.mkShell {
             packages = with pkgs; [
               cmake
+              clang-tools
               pkg-config
               hwloc
               numactl
