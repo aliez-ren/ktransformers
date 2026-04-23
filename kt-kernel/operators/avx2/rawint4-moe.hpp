@@ -23,8 +23,7 @@ namespace avx2 {
 static inline __m256 rawint4_dequant_8x4bit_unscaled(uint32_t packed_weight) {
   const __m256i shifts = _mm256_set_epi32(28, 24, 20, 16, 12, 8, 4, 0);
   __m256i packed_v = _mm256_set1_epi32(packed_weight);
-  __m256i nibbles = _mm256_and_si256(_mm256_srlv_epi32(packed_v, shifts),
-                                     _mm256_set1_epi32(0xF));
+  __m256i nibbles = _mm256_and_si256(_mm256_srlv_epi32(packed_v, shifts), _mm256_set1_epi32(0xF));
   __m256 w = _mm256_cvtepi32_ps(nibbles);
   return _mm256_sub_ps(w, _mm256_set1_ps(8.0f));
 }
@@ -62,8 +61,7 @@ struct GemmKernelAVX2RawInt4 {
         std::memcpy(data, src, (size_t)m * k * sizeof(ggml_bf16_t));
       } else {
         auto [m_start, m_end] = split_range(m, ith, nth);
-        std::memcpy(data + m_start * k, src + m_start * k,
-                    (size_t)(m_end - m_start) * k * sizeof(ggml_bf16_t));
+        std::memcpy(data + m_start * k, src + m_start * k, (size_t)(m_end - m_start) * k * sizeof(ggml_bf16_t));
       }
     }
   };
@@ -147,9 +145,9 @@ struct GemmKernelAVX2RawInt4 {
   };
 };
 
-static inline void gemm_raw_int4(int m, int n, int k, GemmKernelAVX2RawInt4::BufferA& a,
-                                 GemmKernelAVX2RawInt4::BufferB& b, GemmKernelAVX2RawInt4::BufferC& c, int ith,
-                                 int nth) {
+static inline void gemm_rawint4(int m, int n, int k, GemmKernelAVX2RawInt4::BufferA& a,
+                                GemmKernelAVX2RawInt4::BufferB& b, GemmKernelAVX2RawInt4::BufferC& c, int ith,
+                                int nth) {
   auto [n_start, n_end] = split_range(n, ith, nth);
   const int group_size = b.k_group_size;
   const int group_count = b.k_group_count;
@@ -191,22 +189,20 @@ static inline void gemm_raw_int4(int m, int n, int k, GemmKernelAVX2RawInt4::Buf
           std::memcpy(&p1, b_row + (k_base + ki + 8) / 2, sizeof(uint32_t));
           std::memcpy(&p2, b_row + (k_base + ki + 16) / 2, sizeof(uint32_t));
           std::memcpy(&p3, b_row + (k_base + ki + 24) / 2, sizeof(uint32_t));
-          acc1 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki),
-                                 rawint4_dequant_8x4bit_unscaled(p0), acc1);
-          acc2 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 8),
-                                 rawint4_dequant_8x4bit_unscaled(p1), acc2);
-          acc3 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 16),
-                                 rawint4_dequant_8x4bit_unscaled(p2), acc3);
-          acc4 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 24),
-                                 rawint4_dequant_8x4bit_unscaled(p3), acc4);
+          acc1 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki), rawint4_dequant_8x4bit_unscaled(p0), acc1);
+          acc2 = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 8), rawint4_dequant_8x4bit_unscaled(p1), acc2);
+          acc3 =
+              _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 16), rawint4_dequant_8x4bit_unscaled(p2), acc3);
+          acc4 =
+              _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki + 24), rawint4_dequant_8x4bit_unscaled(p3), acc4);
         }
         __m256 g_acc = _mm256_add_ps(_mm256_add_ps(acc1, acc3), _mm256_add_ps(acc2, acc4));
 
         for (; ki + 8 <= group_size; ki += 8) {
           uint32_t packed;
           std::memcpy(&packed, b_row + (k_base + ki) / 2, sizeof(uint32_t));
-          g_acc = _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki),
-                                  rawint4_dequant_8x4bit_unscaled(packed), g_acc);
+          g_acc =
+              _mm256_fmadd_ps(load_bf16_to_fp32(a_row + k_base + ki), rawint4_dequant_8x4bit_unscaled(packed), g_acc);
         }
 
         // Fold this group's unscaled accumulator into the running total with
@@ -289,14 +285,13 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
     int m = m_local_num_[expert_idx];
     auto& bb = do_up ? up_bb_[expert_idx] : gate_bb_[expert_idx];
     auto& bc = do_up ? up_bc_[expert_idx] : gate_bc_[expert_idx];
-    avx2::gemm_raw_int4(m, config_.intermediate_size, config_.hidden_size, *gate_up_ba_[expert_idx], *bb, *bc, ith,
-                        nth);
+    avx2::gemm_rawint4(m, config_.intermediate_size, config_.hidden_size, *gate_up_ba_[expert_idx], *bb, *bc, ith, nth);
   }
 
   void do_down_gemm(int expert_idx, int ith, int nth, int) {
     int m = m_local_num_[expert_idx];
-    avx2::gemm_raw_int4(m, config_.hidden_size, config_.intermediate_size, *down_ba_[expert_idx],
-                        *down_bb_[expert_idx], *down_bc_[expert_idx], ith, nth);
+    avx2::gemm_rawint4(m, config_.hidden_size, config_.intermediate_size, *down_ba_[expert_idx], *down_bb_[expert_idx],
+                       *down_bc_[expert_idx], ith, nth);
   }
 
   void load_weights() {
@@ -334,16 +329,12 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
             }
             uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
             // Gate/Up row offset for this TP partition (bytes).
-            size_t gate_tp_byte_offset =
-                (size_t)tp_part_idx * config_.intermediate_size * config_.hidden_size / 2;
-            gate_bb_[expert_idx]->b =
-                (uint8_t*)config_.gate_projs[0][logical_expert_id] + gate_tp_byte_offset;
-            up_bb_[expert_idx]->b =
-                (uint8_t*)config_.up_projs[0][logical_expert_id] + gate_tp_byte_offset;
+            size_t gate_tp_byte_offset = (size_t)tp_part_idx * config_.intermediate_size * config_.hidden_size / 2;
+            gate_bb_[expert_idx]->b = (uint8_t*)config_.gate_projs[0][logical_expert_id] + gate_tp_byte_offset;
+            up_bb_[expert_idx]->b = (uint8_t*)config_.up_projs[0][logical_expert_id] + gate_tp_byte_offset;
             // Down column offset (bytes per row start). Correct only for tp_count=1.
             size_t down_tp_byte_offset = (size_t)tp_part_idx * config_.intermediate_size / 2;
-            down_bb_[expert_idx]->b =
-                (uint8_t*)config_.down_projs[0][logical_expert_id] + down_tp_byte_offset;
+            down_bb_[expert_idx]->b = (uint8_t*)config_.down_projs[0][logical_expert_id] + down_tp_byte_offset;
           },
           nullptr);
 
@@ -412,20 +403,19 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
             uint64_t logical_expert_id = expert_map(physical_to_logical_map, expert_idx);
             size_t scale_elem_count = ((size_t)config_.hidden_size * config_.intermediate_size) / group_size;
             convert_or_copy(gate_bb_[expert_idx]->d,
-                            (ggml_bf16_t*)config_.gate_scale + logical_expert_id * scale_elem_count,
-                            scale_elem_count);
+                            (ggml_bf16_t*)config_.gate_scale + logical_expert_id * scale_elem_count, scale_elem_count);
             convert_or_copy(up_bb_[expert_idx]->d,
-                            (ggml_bf16_t*)config_.up_scale + logical_expert_id * scale_elem_count,
-                            scale_elem_count);
+                            (ggml_bf16_t*)config_.up_scale + logical_expert_id * scale_elem_count, scale_elem_count);
             convert_or_copy(down_bb_[expert_idx]->d,
-                            (ggml_bf16_t*)config_.down_scale + logical_expert_id * scale_elem_count,
-                            scale_elem_count);
+                            (ggml_bf16_t*)config_.down_scale + logical_expert_id * scale_elem_count, scale_elem_count);
           },
           nullptr);
     }
   }
 
-  static inline void fp32_to_bf16(ggml_bf16_t* dst, const float* src, size_t count) { convert_or_copy(dst, src, count); }
+  static inline void fp32_to_bf16(ggml_bf16_t* dst, const float* src, size_t count) {
+    convert_or_copy(dst, src, count);
+  }
 
   void write_weights_to_buffer(int gpu_tp_count, int cpu_tp_count, int expert_id, const GeneralMOEConfig& full_config,
                                const std::vector<uintptr_t>& w13_weight_ptrs,
@@ -469,7 +459,8 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
             if (task_id < NUM_WEIGHT_TASKS) {
               size_t start = (size_t)task_id * weight_chunk_size;
               size_t end = std::min(start + weight_chunk_size, cpu_tp_weight_bytes);
-              if (start < end) std::memcpy(w13_weight_dst + offset_in_gpu_weight + start, gate_bb_[expert_id]->b + start, end - start);
+              if (start < end)
+                std::memcpy(w13_weight_dst + offset_in_gpu_weight + start, gate_bb_[expert_id]->b + start, end - start);
             } else if (task_id < NUM_WEIGHT_TASKS * 2) {
               int chunk_idx = task_id - NUM_WEIGHT_TASKS;
               size_t start = (size_t)chunk_idx * weight_chunk_size;
@@ -530,7 +521,8 @@ class AVX2_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVX2_RAW_INT4_MOE_TP<T>> {
             if (task_type < NUM_WEIGHT_TASKS) {
               size_t start = (size_t)task_type * weight_chunk_size;
               size_t end = std::min(start + weight_chunk_size, data_per_gpu_tp_weight);
-              if (start < end) std::memcpy(w13_weight_dst + start, gate_bb_[expert_id]->b + cpu_offset_weight + start, end - start);
+              if (start < end)
+                std::memcpy(w13_weight_dst + start, gate_bb_[expert_id]->b + cpu_offset_weight + start, end - start);
             } else if (task_type < NUM_WEIGHT_TASKS * 2) {
               int chunk_idx = task_type - NUM_WEIGHT_TASKS;
               size_t start = (size_t)chunk_idx * weight_chunk_size;
@@ -614,16 +606,19 @@ class TP_MOE<AVX2_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX2_RAW_
               size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
               uint8_t* src_gate = (uint8_t*)config.gate_proj +
                                   ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-              uint8_t* src_up = (uint8_t*)config.up_proj +
-                                ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+              uint8_t* src_up =
+                  (uint8_t*)config.up_proj + ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
               uint8_t* src_down = (uint8_t*)config.down_proj +
                                   ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-              ggml_bf16_t* src_gate_scale = (ggml_bf16_t*)config.gate_scale +
-                                             expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-              ggml_bf16_t* src_up_scale = (ggml_bf16_t*)config.up_scale +
-                                           expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-              ggml_bf16_t* src_down_scale = (ggml_bf16_t*)config.down_scale +
-                                             expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
+              ggml_bf16_t* src_gate_scale =
+                  (ggml_bf16_t*)config.gate_scale +
+                  expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
+              ggml_bf16_t* src_up_scale =
+                  (ggml_bf16_t*)config.up_scale +
+                  expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
+              ggml_bf16_t* src_down_scale =
+                  (ggml_bf16_t*)config.down_scale +
+                  expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
 
               std::memcpy((uint8_t*)tpc.gate_proj + ((expert_id * weight_elem_count) >> 1),
                           src_gate + ((i * weight_elem_count) >> 1), weight_elem_count >> 1);
@@ -635,10 +630,10 @@ class TP_MOE<AVX2_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX2_RAW_
                           src_up_scale + i * scales_elem_count, sizeof(ggml_bf16_t) * scales_elem_count);
 
               for (size_t col = 0; col < (size_t)config.hidden_size; col++) {
-                std::memcpy((uint8_t*)tpc.down_proj +
-                                ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
-                            src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
-                            tpc.intermediate_size >> 1);
+                std::memcpy(
+                    (uint8_t*)tpc.down_proj + ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
+                    src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
+                    tpc.intermediate_size >> 1);
                 std::memcpy((ggml_bf16_t*)tpc.down_scale +
                                 (expert_id * scales_elem_count + col * (tpc.intermediate_size / group_size)),
                             src_down_scale + (col * (config.intermediate_size / group_size) +

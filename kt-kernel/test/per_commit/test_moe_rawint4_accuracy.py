@@ -66,7 +66,7 @@ def load_amx_utils():
     return sys.modules["kt_kernel.utils.amx"]
 
 
-def raw_int4_quantize(weight_bf16):
+def rawint4_quantize(weight_bf16):
     """Quantize [N, K] BF16 weight to RAWINT4 layout."""
     n, k = weight_bf16.shape
     assert k % 2 == 0
@@ -95,7 +95,7 @@ def raw_int4_quantize(weight_bf16):
     return qweight, scales
 
 
-def raw_int4_dequantize(qweight, scales, out_features, in_features):
+def rawint4_dequantize(qweight, scales, out_features, in_features):
     """Dequantize RAWINT4 qweight/scales back to fp32 [N, K]."""
     result = torch.zeros((out_features, in_features), dtype=torch.float32)
     for ni in range(out_features):
@@ -180,15 +180,15 @@ def run_backend_accuracy_test(backend_name, backend_cls, threshold, qlen):
         down_qw_list, down_scale_list = [], []
 
         for e in range(expert_num):
-            qw, sc = raw_int4_quantize(gate_bf16[e])
+            qw, sc = rawint4_quantize(gate_bf16[e])
             gate_qw_list.append(qw)
             gate_scale_list.append(sc)
 
-            qw, sc = raw_int4_quantize(up_bf16[e])
+            qw, sc = rawint4_quantize(up_bf16[e])
             up_qw_list.append(qw)
             up_scale_list.append(sc)
 
-            qw, sc = raw_int4_quantize(down_bf16[e])
+            qw, sc = rawint4_quantize(down_bf16[e])
             down_qw_list.append(qw)
             down_scale_list.append(sc)
 
@@ -201,19 +201,19 @@ def run_backend_accuracy_test(backend_name, backend_cls, threshold, qlen):
 
         gate_deq = torch.stack(
             [
-                raw_int4_dequantize(gate_qw_list[e], gate_scale_list[e], intermediate_size, hidden_size)
+                rawint4_dequantize(gate_qw_list[e], gate_scale_list[e], intermediate_size, hidden_size)
                 for e in range(expert_num)
             ]
         )
         up_deq = torch.stack(
             [
-                raw_int4_dequantize(up_qw_list[e], up_scale_list[e], intermediate_size, hidden_size)
+                rawint4_dequantize(up_qw_list[e], up_scale_list[e], intermediate_size, hidden_size)
                 for e in range(expert_num)
             ]
         )
         down_deq = torch.stack(
             [
-                raw_int4_dequantize(down_qw_list[e], down_scale_list[e], hidden_size, intermediate_size)
+                rawint4_dequantize(down_qw_list[e], down_scale_list[e], hidden_size, intermediate_size)
                 for e in range(expert_num)
             ]
         )

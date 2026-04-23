@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * This backend consumes the same RAWINT4 source layout as the plain AVX2
- * backend in raw_int4-moe.hpp:
+ * backend in rawint4-moe.hpp:
  *   weights [N, K/2] uint8  (two signed int4 values per byte, value = nibble - 8,
  *                            low nibble = even k, high nibble = odd k)
  *   scales  [N, K/group_size] bf16
@@ -107,16 +107,15 @@ struct GemmKernelAVXVNNI256RawInt4 {
         std::memcpy(data, src, (size_t)m * k * sizeof(ggml_bf16_t));
       } else {
         auto [m_start, m_end] = avx2::split_range(m, ith, nth);
-        std::memcpy(data + m_start * k, src + m_start * k,
-                    (size_t)(m_end - m_start) * k * sizeof(ggml_bf16_t));
+        std::memcpy(data + m_start * k, src + m_start * k, (size_t)(m_end - m_start) * k * sizeof(ggml_bf16_t));
       }
     }
   };
 
   struct BufferB {
-    int8_t* qweight_s8 = nullptr;   // [N, K] unpacked signed int8 weights
-    float* scales = nullptr;        // [N, num_groups] float32 (converted from bf16)
-    int16_t* weight_sums = nullptr; // [N, num_groups] per-group sum of unpacked int8 weights
+    int8_t* qweight_s8 = nullptr;    // [N, K] unpacked signed int8 weights
+    float* scales = nullptr;         // [N, num_groups] float32 (converted from bf16)
+    int16_t* weight_sums = nullptr;  // [N, num_groups] per-group sum of unpacked int8 weights
     int n = 0;
     int k = 0;
     int group_size = 128;
@@ -206,9 +205,9 @@ struct GemmKernelAVXVNNI256RawInt4 {
 };
 
 KT_AVXVNNI256_RAWINT4_TARGET
-static inline void gemm_raw_int4_avxvnni256(int m, int n, int k, GemmKernelAVXVNNI256RawInt4::BufferA& a,
-                                            GemmKernelAVXVNNI256RawInt4::BufferB& b,
-                                            GemmKernelAVXVNNI256RawInt4::BufferC& c, int ith, int nth) {
+static inline void gemm_rawint4_avxvnni256(int m, int n, int k, GemmKernelAVXVNNI256RawInt4::BufferA& a,
+                                           GemmKernelAVXVNNI256RawInt4::BufferB& b,
+                                           GemmKernelAVXVNNI256RawInt4::BufferC& c, int ith, int nth) {
   (void)k;
   auto [n_start, n_end] = avx2::split_range(n, ith, nth);
   const int group_size = b.group_size;
@@ -312,16 +311,15 @@ class AVXVNNI256_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVXVNNI256_RAW_INT4_M
     auto& ba = gate_up_ba_[expert_idx];
     auto& bb = do_up ? up_bb_[expert_idx] : gate_bb_[expert_idx];
     auto& bc = do_up ? up_bc_[expert_idx] : gate_bc_[expert_idx];
-    avxvnni_rawint4::gemm_raw_int4_avxvnni256(m, config_.intermediate_size, config_.hidden_size, *ba, *bb, *bc, ith,
-                                              nth);
+    avxvnni_rawint4::gemm_rawint4_avxvnni256(m, config_.intermediate_size, config_.hidden_size, *ba, *bb, *bc, ith,
+                                             nth);
   }
 
   void do_down_gemm(int expert_idx, int ith, int nth, int qlen) {
     (void)qlen;
     int m = m_local_num_[expert_idx];
-    avxvnni_rawint4::gemm_raw_int4_avxvnni256(m, config_.hidden_size, config_.intermediate_size,
-                                              *down_ba_[expert_idx], *down_bb_[expert_idx], *down_bc_[expert_idx], ith,
-                                              nth);
+    avxvnni_rawint4::gemm_rawint4_avxvnni256(m, config_.hidden_size, config_.intermediate_size, *down_ba_[expert_idx],
+                                             *down_bb_[expert_idx], *down_bc_[expert_idx], ith, nth);
   }
 
   void load_weights() {
@@ -344,17 +342,14 @@ class AVXVNNI256_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVXVNNI256_RAW_INT4_M
             uint64_t logical = expert_map(physical_to_logical_map, expert_idx);
             int ith = task_id % nth;
 
-            const size_t weight_bytes_per_expert =
-                ((size_t)config_.intermediate_size * config_.hidden_size) / 2;
+            const size_t weight_bytes_per_expert = ((size_t)config_.intermediate_size * config_.hidden_size) / 2;
             const size_t scale_elems_per_expert =
                 (size_t)config_.intermediate_size * (config_.hidden_size / group_size);
 
             const uint8_t* gate_src = (const uint8_t*)config_.gate_proj + logical * weight_bytes_per_expert;
             const uint8_t* up_src = (const uint8_t*)config_.up_proj + logical * weight_bytes_per_expert;
-            const ggml_bf16_t* gate_sc_src =
-                (const ggml_bf16_t*)config_.gate_scale + logical * scale_elems_per_expert;
-            const ggml_bf16_t* up_sc_src =
-                (const ggml_bf16_t*)config_.up_scale + logical * scale_elems_per_expert;
+            const ggml_bf16_t* gate_sc_src = (const ggml_bf16_t*)config_.gate_scale + logical * scale_elems_per_expert;
+            const ggml_bf16_t* up_sc_src = (const ggml_bf16_t*)config_.up_scale + logical * scale_elems_per_expert;
 
             gate_bb_[expert_idx]->from_raw_mat(gate_src, gate_sc_src, ith, nth);
             up_bb_[expert_idx]->from_raw_mat(up_src, up_sc_src, ith, nth);
@@ -374,14 +369,12 @@ class AVXVNNI256_RAW_INT4_MOE_TP : public AVX2_MOE_BASE<T, AVXVNNI256_RAW_INT4_M
             uint64_t logical = expert_map(physical_to_logical_map, expert_idx);
             int ith = task_id % nth;
 
-            const size_t weight_bytes_per_expert =
-                ((size_t)config_.hidden_size * config_.intermediate_size) / 2;
+            const size_t weight_bytes_per_expert = ((size_t)config_.hidden_size * config_.intermediate_size) / 2;
             const size_t scale_elems_per_expert =
                 (size_t)config_.hidden_size * (config_.intermediate_size / group_size);
 
             const uint8_t* down_src = (const uint8_t*)config_.down_proj + logical * weight_bytes_per_expert;
-            const ggml_bf16_t* down_sc_src =
-                (const ggml_bf16_t*)config_.down_scale + logical * scale_elems_per_expert;
+            const ggml_bf16_t* down_sc_src = (const ggml_bf16_t*)config_.down_scale + logical * scale_elems_per_expert;
 
             down_bb_[expert_idx]->from_raw_mat(down_src, down_sc_src, ith, nth);
           },
@@ -424,7 +417,7 @@ class TP_MOE<AVXVNNI256_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX
       throw std::runtime_error("AVX-VNNI RAWINT4 requires group_size > 0");
     }
 
-    // Build TP-sliced flat buffers per NUMA partition (source layout mirrors raw_int4-moe.hpp).
+    // Build TP-sliced flat buffers per NUMA partition (source layout mirrors rawint4-moe.hpp).
     pool->dispense_backend()->do_numa_job([&, this](int i) {
       auto& tpc = tps[i]->config_;
       size_t weight_elem_count = (size_t)tpc.intermediate_size * tpc.hidden_size;
@@ -440,18 +433,21 @@ class TP_MOE<AVXVNNI256_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX
           tpc.expert_num, nullptr,
           [&, i](int expert_id_) {
             size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
-            uint8_t* src_gate = (uint8_t*)config.gate_proj +
-                                ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            uint8_t* src_up = (uint8_t*)config.up_proj +
-                              ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            uint8_t* src_down = (uint8_t*)config.down_proj +
-                                ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
-            ggml_bf16_t* src_gate_scale = (ggml_bf16_t*)config.gate_scale +
-                                          expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-            ggml_bf16_t* src_up_scale = (ggml_bf16_t*)config.up_scale +
-                                        expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
-            ggml_bf16_t* src_down_scale = (ggml_bf16_t*)config.down_scale +
-                                          expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
+            uint8_t* src_gate =
+                (uint8_t*)config.gate_proj + ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+            uint8_t* src_up =
+                (uint8_t*)config.up_proj + ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+            uint8_t* src_down =
+                (uint8_t*)config.down_proj + ((expert_id * (size_t)config.intermediate_size * config.hidden_size) >> 1);
+            ggml_bf16_t* src_gate_scale =
+                (ggml_bf16_t*)config.gate_scale +
+                expert_id * ((size_t)config.hidden_size / group_size) * config.intermediate_size;
+            ggml_bf16_t* src_up_scale = (ggml_bf16_t*)config.up_scale + expert_id *
+                                                                            ((size_t)config.hidden_size / group_size) *
+                                                                            config.intermediate_size;
+            ggml_bf16_t* src_down_scale =
+                (ggml_bf16_t*)config.down_scale +
+                expert_id * ((size_t)config.intermediate_size / group_size) * config.hidden_size;
 
             // Gate/Up: contiguous slice along N (intermediate).
             std::memcpy((uint8_t*)tpc.gate_proj + ((expert_id * weight_elem_count) >> 1),
@@ -465,10 +461,10 @@ class TP_MOE<AVXVNNI256_RAW_INT4_MOE_TP<K>> : public TP_MOE<AVX2_MOE_BASE<K, AVX
 
             // Down: column-gather across N (hidden) rows for the TP-sliced K (intermediate).
             for (size_t col = 0; col < (size_t)config.hidden_size; col++) {
-              std::memcpy((uint8_t*)tpc.down_proj +
-                              ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
-                          src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
-                          tpc.intermediate_size >> 1);
+              std::memcpy(
+                  (uint8_t*)tpc.down_proj + ((expert_id * weight_elem_count + col * tpc.intermediate_size) >> 1),
+                  src_down + ((col * config.intermediate_size + i * tpc.intermediate_size) >> 1),
+                  tpc.intermediate_size >> 1);
               std::memcpy((ggml_bf16_t*)tpc.down_scale +
                               (expert_id * scales_elem_count + col * (tpc.intermediate_size / group_size)),
                           src_down_scale + (col * (config.intermediate_size / group_size) +
