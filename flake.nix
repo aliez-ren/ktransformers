@@ -46,15 +46,29 @@
                   libcurand.lib      # libcurand.so
                 ]);
             };
+            nativeIncludePath = lib.makeSearchPath "include" [
+              cudaHome
+              pkgs.cpptrace
+              pkgs.hwloc.dev
+              pkgs.numactl.dev
+            ];
+            nativeLibraryPath = lib.makeLibraryPath [
+              pkgs.cpptrace
+              pkgs.hwloc
+              pkgs.numactl
+            ];
           in
           pkgs.mkShell {
             packages = with pkgs; [
               cmake
+              rustc
+              cargo
               clang-tools
+              openssl
               cpptrace
               pkg-config
               hwloc
-              numactl
+              numactl.dev
               conda
             ];
             CFLAGS = "-mf16c";
@@ -69,24 +83,18 @@
             # $cudaHome/include, so we must add that to the standard
             # C/C++ include search paths so that the host compiler nvcc
             # invokes can find it.
-            C_INCLUDE_PATH = "${cudaHome}/include";
-            CPLUS_INCLUDE_PATH = "${cudaHome}/include";
+            C_INCLUDE_PATH = nativeIncludePath;
+            CPLUS_INCLUDE_PATH = nativeIncludePath;
 
             LD_LIBRARY_PATH = lib.concatStringsSep ":" [
               "/run/opengl-driver/lib"
               "${cudaHome}/lib"
-              (lib.makeLibraryPath [
-                pkgs.hwloc
-                pkgs.numactl
-              ])
+              nativeLibraryPath
             ];
             LIBRARY_PATH = lib.concatStringsSep ":" [
               "/run/opengl-driver/lib"
               "${cudaHome}/lib"
-              (lib.makeLibraryPath [
-                pkgs.hwloc
-                pkgs.numactl
-              ])
+              nativeLibraryPath
             ];
             shellHook = ''
               CONDA_ACTIVATE="$HOME/.conda/bin/activate"
