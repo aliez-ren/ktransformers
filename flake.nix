@@ -51,6 +51,7 @@
             packages = with pkgs; [
               cmake
               clang-tools
+              cpptrace
               pkg-config
               hwloc
               numactl
