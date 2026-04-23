@@ -12,7 +12,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(HAVE_CPPTRACE)
 #include <cpptrace/cpptrace.hpp>
+#endif
 #include <csignal>
 #include <cstddef>
 #include <cstring>
@@ -979,8 +981,8 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
             py::arg("size"), py::arg("type"));
 }
 
+#if defined(HAVE_CPPTRACE)
 static void warmup_cpptrace() {
-  // 避免第一次调用触发 lazy-loading（malloc 等） :contentReference[oaicite:7]{index=7}
   cpptrace::frame_ptr buffer[10];
   (void)cpptrace::safe_generate_raw_trace(buffer, 10);
   cpptrace::safe_object_frame frame{};
@@ -1004,3 +1006,4 @@ __attribute__((constructor)) static void install_handlers() {
   sigaction(SIGSEGV, &sa, nullptr);
   sigaction(SIGABRT, &sa, nullptr);
 }
+#endif  // HAVE_CPPTRACE
