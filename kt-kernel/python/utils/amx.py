@@ -26,6 +26,7 @@ AVX2FP8_MOE = getattr(_moe_mod, "AVX2FP8_MOE", None)
 AVX2GPTQInt4_MOE = getattr(_moe_mod, "AVX2GPTQInt4_MOE", None)
 AVX2RawInt4_MOE = getattr(_moe_mod, "AVX2RawInt4_MOE", None)
 AVXVNNI256GPTQInt4_MOE = getattr(_moe_mod, "AVXVNNI256GPTQInt4_MOE", None)
+AVXVNNI256RawInt4_MOE = getattr(_moe_mod, "AVXVNNI256RawInt4_MOE", None)
 
 _HAS_AMXINT4_SUPPORT = AMXInt4_MOE is not None
 _HAS_AMXINT8_SUPPORT = AMXInt8_MOE is not None
@@ -38,7 +39,9 @@ _HAS_AVX2_BF16_SUPPORT = AVX2BF16_MOE is not None
 _HAS_AVX2_FP8_SUPPORT = AVX2FP8_MOE is not None
 _HAS_AVX2_GPTQ_INT4_SUPPORT = AVX2GPTQInt4_MOE is not None
 _HAS_AVXVNNI256_GPTQ_INT4_SUPPORT = AVXVNNI256GPTQInt4_MOE is not None
+_HAS_AVXVNNI256_RAW_INT4_SUPPORT = AVXVNNI256RawInt4_MOE is not None
 _AVXVNNI256_GPTQ_INT4_MAX_GROUP_SIZE = 256
+_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE = 256
 
 
 def _host_has_cpu_flag(*flag_names: str) -> bool:
@@ -60,6 +63,12 @@ def _supports_avxvnni256_gptq_int4_group_size(group_size: Optional[int]) -> bool
     if group_size is None:
         return True
     return group_size > 0 and group_size % 32 == 0 and group_size <= _AVXVNNI256_GPTQ_INT4_MAX_GROUP_SIZE
+
+
+def _supports_avxvnni256_rawint4_group_size(group_size: Optional[int]) -> bool:
+    if group_size is None:
+        return True
+    return group_size > 0 and group_size % 32 == 0 and group_size <= _AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE
 
 
 def _select_gptq_int4_backend(group_size: Optional[int] = None):
@@ -93,11 +102,25 @@ def _select_gptq_int4_backend(group_size: Optional[int] = None):
 
 def _select_rawint4_backend(group_size: Optional[int] = None):
     forced = os.getenv("KT_RAWINT4_BACKEND", "").strip().lower()
+    avxvnni_group_supported = _supports_avxvnni256_rawint4_group_size(group_size)
 
     if forced == "amx":
         if not _HAS_RAWINT4_SUPPORT:
             raise RuntimeError("KT_RAWINT4_BACKEND=amx requested, but AMXInt4_KGroup_MOE is not compiled in.")
         return AMXInt4_KGroup_MOE
+
+    if forced in {"avxvnni", "avxvnni256"}:
+        if not _HAS_AVXVNNI256_RAW_INT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avxvnni requested, but AVXVNNI256RawInt4_MOE is not compiled in.")
+        if not _HOST_HAS_AVX_VNNI:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avxvnni requested, but the current CPU does not support avx_vnni.")
+        if not avxvnni_group_supported:
+            raise RuntimeError(
+                "KT_RAWINT4_BACKEND=avxvnni requested, but "
+                f"group_size={group_size} is unsupported. AVX-VNNI-256 RAWINT4 only supports "
+                f"positive multiples of 32 up to {_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE}."
+            )
+        return AVXVNNI256RawInt4_MOE
 
     if forced == "avx2":
         if not _HAS_AVX2_RAWINT4_SUPPORT:
@@ -106,6 +129,8 @@ def _select_rawint4_backend(group_size: Optional[int] = None):
 
     if _HAS_RAWINT4_SUPPORT:
         return AMXInt4_KGroup_MOE
+    if _HAS_AVXVNNI256_RAW_INT4_SUPPORT and _HOST_HAS_AVX_VNNI and avxvnni_group_supported:
+        return AVXVNNI256RawInt4_MOE
     if _HAS_AVX2_RAWINT4_SUPPORT:
         return AVX2RawInt4_MOE
     return None
@@ -434,11 +459,14 @@ class NativeMoEWrapper(BaseMoEWrapper):
         method: str = "RAWINT4",
         numa_nodes: Optional[List[int]] = None,
     ):
-        if method == "RAWINT4" and not _HAS_RAWINT4_SUPPORT and not _HAS_AVX2_RAWINT4_SUPPORT:
+        if method == "RAWINT4" and not (
+            _HAS_RAWINT4_SUPPORT or _HAS_AVX2_RAWINT4_SUPPORT or _HAS_AVXVNNI256_RAW_INT4_SUPPORT
+        ):
             raise RuntimeError(
                 "RAWINT4 backend not available. Required ISA:\n"
                 "  - AVX512F + AVX512BW (for AMX backend), or\n"
                 "  - AVX2 + FMA (for AVX2 fallback backend)\n"
+                "AVX-VNNI-256 will be selected automatically when available on the current CPU.\n"
                 "Please recompile kt_kernel_ext with AVX512 or AVX2 enabled."
             )
         if method == "FP8" and not _HAS_FP8_SUPPORT and not _HAS_AVX2_FP8_SUPPORT:
@@ -615,8 +643,10 @@ class NativeMoEWrapper(BaseMoEWrapper):
             backend_cls = _select_rawint4_backend(group_size)
             if backend_cls is None:
                 raise RuntimeError(
-                    "No RAWINT4 backend is available after runtime selection. "
-                    "AMX (AMXInt4_KGroup_MOE) is preferred; AVX2 (AVX2RawInt4_MOE) is used as the fallback when available."
+                    "No RAWINT4 backend is available after runtime selection for "
+                    f"group_size={group_size}. AMX (AMXInt4_KGroup_MOE) is preferred; "
+                    f"AVX-VNNI-256 supports positive multiples of 32 up to "
+                    f"{_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE}; AVX2 (AVX2RawInt4_MOE) is used as the final fallback."
                 )
             self.moe = backend_cls(moe_config)
         elif self.method == "FP8":
